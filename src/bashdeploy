@@ -1,0 +1,247 @@
+#!/bin/bash
+
+############################################################################
+########## INFO ############################################################
+############################################################################
+### ABOUT:
+####### LeoMoon BashDeploy performs steps below on each host:
+#######     - Sends bash scripts to many linux systems
+#######     - Makes it executable
+#######     - Runs it as admin (sudo)
+### AUTOHR:
+####### Amin Babaeipanah
+
+############################################################################
+########## INTERNAL VARIABLES ##############################################
+############################################################################
+VERR="1.0.3"
+CLRX=$(echo -e "\e[39m ") #color reset
+CLRE=$(echo -e "\e[31m") #color red
+CLRS=$(echo -e "\e[32m") #color green
+CLRC=$(echo -e "\e[33m") #color yellow
+CLRQ=$(echo -e "\e[94m") #color blue
+CLRI=$(echo -e "\e[36m") #color cyan
+CLRD=$(echo -e "\e[90m")
+SYME=$(echo "[x]")
+SYMC=$(echo "[!]")
+SYMQ=$(echo "[?]")
+SYMI=$(echo "[i]")
+NOW=$(date +"%Y%m%d-%H%M%S")
+
+############################################################################
+########## BashDeploy ######################################################
+############################################################################
+if [[ -z $(which sshpass) ]]; then
+    echo -e "$CLRE $SYME This script requires \"sshpass\" package to fuction!$CLRX"
+    exit 1;
+fi
+
+#define required packages
+sshpassExec=$(which sshpass)
+
+apptitle() {
+    echo "
+ ####################################################################
+ ###### LeoMoon BashDeploy v$VERR ###################################
+ ###### Author: Amin Babaeipanah ####################################
+ ###### More info: https://lms.to/lmbd ##############################
+ ####################################################################
+"
+}
+
+usage() {
+    echo "
+$CLRI $SYMI Usage:$CLRX
+    $0 [-h <host-file>] [-s <script-file>] [-t <seconds>] [-l] [-a] [-d]
+$CLRI $SYMI Parameters:$CLRX
+    -h|--hosts     File with user@ip:port on every line. Required.
+    -s|--script    Script file to run. Required.
+    -t|--timeout   Connection timeout amount. Default value is 5.
+    -l|--logging   Create log files in ./logs folder.
+    -a|--ask       Ask for password for every connection.
+    -d|--dry-run   Will echo what will be executed on which server.
+"
+    exit 1;
+}
+
+POSITIONAL=()
+while [[ $# -gt 0 ]]; do
+    key="$1"
+    case $key in
+        -h|--hosts)
+        h="$2"
+        shift #past argument
+        shift #past value
+        ;;
+        -s|--script)
+        s="$2"
+        shift #past argument
+        shift #past value
+        ;;
+        -t|--timeout)
+        t="$2"
+        shift #past argument
+        shift #past value
+        ;;
+        -l|--logging)
+        l=1
+        shift #past argument
+        ;;
+        -a|--ask)
+        a=1
+        shift #past argument
+        ;;
+        -d|--dry-run)
+        d=1
+        shift #past argument
+        ;;
+        *)    #unknown option
+        apptitle
+        echo "$CLRE $SYME Unkown switch!$CLRX"
+        usage
+        ;;
+    esac
+done
+set -- "${POSITIONAL[@]}" #restore positional parameters
+
+if [[ -z $h ]]; then #check required parameters
+    apptitle
+    echo "$CLRE $SYME Hosts file is not defined!$CLRX"
+    usage
+fi
+
+if [[ -z $s ]]; then #check required parameters
+    apptitle
+    echo "$CLRE $SYME Script file is not defined!$CLRX"
+    usage
+fi
+
+if [[ ! -f $h ]]; then
+    apptitle
+    echo "$CLRE $SYME Hosts file not found!$CLRX"
+    usage
+fi
+
+if [[ ! -f $s ]]; then
+    apptitle
+    echo "$CLRE $SYME Script file not found!$CLRX"
+    usage
+fi
+
+if [[ $l == 1 ]]; then LOG="./logs/$NOW"; fi
+if [[ ! -d "./logs" ]]; then mkdir -p "./logs"; fi
+touch "${LOG}_all.log"
+touch "${LOG}_err.log"
+if [[ ! -e "${LOG}_all.log" ]]; then
+    apptitle
+    echo "$CLRE $SYME Log file cannot be created!$CLRX"
+    usage
+    exit 1;
+fi
+
+if [[ -z $t ]]; then
+    t=5
+elif [[ ! $t =~ ^[0-9]+$ ]]; then
+    apptitle
+    echo "$CLRE $SYME These parameters must be positive integers: -t$CLRX"
+    usage
+fi
+
+sn=/tmp/bd_${s##*/}
+hlist=($(sed 1p $h))
+sshopts="-o ConnectTimeout=$t -o UserKnownHostsFile=/dev/null -o StrictHostKeyChecking=no -o GlobalKnownHostsFile=/dev/null -o PubkeyAuthentication=no -o PasswordAuthentication=yes"
+cmsg="\n\n#############################\n# LeoMoon BashDeploy v$VERR #\n#############################\n"
+rm -rf $l
+#start
+apptitle
+if [[ ! $a == 1 ]] && [[ ! $d == 1 ]]; then
+    echo -n "$CLRQ $SYMQ Please enter the master password:$CLRX"
+    read -s hpass
+    echo ""
+    echo "$CLRD-----------------------------------------------------------------$CLRX"
+fi
+if [[ $d == 1 ]]; then
+    echo "$CLRI $SYMI DRY-RUN:$CLRX"
+    for ((i = 1 ; i <= $((${#hlist[@]}-1)) ; i++)); do
+        echo "$CLRI     [$i] Script:$CLRX $s ${CLRI}Will be executed on:$CLRX ${hlist[$i]}"
+    done
+    echo ""
+else
+    for ((i = 1 ; i <= $((${#hlist[@]}-1)) ; i++)); do
+        IFS=: read -r -a hport <<< "${hlist[$i]}"
+        if [[ -z ${hport[1]} ]]; then
+            port=22
+        else
+            port=${hport[1]}
+        fi
+        ERROR=0
+        LOGTXT=''
+        echo "$CLRQ [#] Host $i of $((${#hlist[@]}-1)): ${hlist[$i]}$CLRX"
+        if [[ $l == 1 ]]; then LOGTXT+=" [#] Host $i of $((${#hlist[@]}-1)): ${hlist[$i]}\n"; fi #LOG
+        if [[ $a == 1 ]]; then
+            echo -n "$CLRQ $SYMQ Password:$CLRX"
+            read -s hpass
+            echo ""
+        fi
+        echo -n "$CLRI $SYMI Sending \"$s\" to:$CLRX ${hlist[$i]} ... "
+        if [[ $l == 1 ]]; then LOGTXT+=" $SYMI Sending \"$s\" to: ${hlist[$i]} ... "; fi
+        `$sshpassExec -p $hpass ssh -q -t $sshopts ${hport[0]} -p$port "cat > $sn" < $s 2> /dev/null` >/dev/null 2>&1
+        ecode=$?
+        if [[ $ecode -eq 0 ]]; then
+            echo "$CLRS[SUCCESS]$CLRX"
+            if [[ $l == 1 ]]; then LOGTXT+="[SUCCESS]\n"; fi
+            echo "$CLRI     $SYMI Exit code:$CLRX $ecode"
+            if [[ $l == 1 ]]; then LOGTXT+="     $SYMI Exit code: $ecode\n"; fi
+            echo -n "$CLRI $SYMI Executing \"$sn\" on:$CLRX ${hlist[$i]} ... "
+            if [[ $l == 1 ]]; then LOGTXT+=" $SYMI Executing \"$sn\" on: ${hlist[$i]} ... "; fi
+            output=$($sshpassExec -p $hpass ssh -q -t $sshopts ${hport[0]} -p$port "echo '$hpass' | sudo -S echo -e '$cmsg'; sudo chmod +x $sn && sudo bash $sn" 2> /dev/null) >/dev/null 2>&1
+            ecode=$?
+            if [[ $ecode -eq 0 ]]; then
+                echo "$CLRS[SUCCESS]$CLRX"
+                if [[ $l == 1 ]]; then LOGTXT+="[SUCCESS]\n"; fi
+            elif [[ $ecode -eq 1 ]] || [[ $ecode -eq 2 ]] || [[ $ecode -eq 5 ]] || [[ $ecode -eq 255 ]]; then
+                if [[ $ecode -eq 1 ]]; then etxt='(Undetermined error in file copy)'; elif [[ $ecode -eq 2 ]]; then etxt='(Remote host connection failure)'; elif [[ $ecode -eq 5 ]]; then etxt='(Connection lost for some reason)'; elif [[ $ecode -eq 255 ]]; then etxt='(Error occurred in SSH)'; fi
+                echo "$CLRE[FAILED]$CLRX"
+                if [[ $l == 1 ]]; then LOGTXT+="[FAILED]\n"; fi
+                echo "$CLRI     $SYMI Exit code:$CLRX $ecode $etxt"
+                if [[ $l == 1 ]]; then LOGTXT+="     $SYMI Exit code: $ecode $etxt\n"; fi
+                ERROR=1
+            else
+                echo "$CLRC[ERROR]$CLRX"
+                if [[ $l == 1 ]]; then LOGTXT+="[SCRIPT ERROR]\n"; fi
+                ERROR=1
+            fi
+            echo "$CLRI     $SYMI Exit code:$CLRX $ecode"
+            if [[ $l == 1 ]]; then LOGTXT+="     $SYMI Exit code: $ecode\n"; fi
+            echo "$CLRI     [>] Remote output:$CLRD"
+            if [[ $l == 1 ]]; then LOGTXT+="     [>] Remote output:\n"; fi
+            if [[ -z ${output} ]]; then
+                echo "No output."
+                if [[ $l == 1 ]]; then LOGTXT+="No output.\n"; fi
+            else
+                echo "${output}"
+                if [[ $l == 1 ]]; then LOGTXT+="${output//$'\r'/}\n"; fi
+            fi
+        elif [[ $ecode -eq 2 ]] || [[ $ecode -eq 5 ]] || [[ $ecode -eq 255 ]]; then
+            if [[ $ecode -eq 2 ]]; then etxt='(Remote host connection failure)'; elif [[ $ecode -eq 5 ]]; then etxt='(Connection lost for some reason)'; elif [[ $ecode -eq 255 ]]; then etxt='(Error occurred in SSH)'; fi
+            echo "$CLRE[FAILED]$CLRX"
+            if [[ $l == 1 ]]; then LOGTXT+="[FAILED]\n"; fi
+            echo "$CLRI     $SYMI Exit code:$CLRX $ecode $etxt"
+            if [[ $l == 1 ]]; then LOGTXT+="     $SYMI Exit code: $ecode $etxt\n"; fi
+            ERROR=1
+        else
+            echo "$CLRC[ERROR]$CLRX"
+            if [[ $l == 1 ]]; then LOGTXT+="[SCRIPT ERROR]\n"; fi
+            echo "$CLRI     $SYMI Exit code:$CLRX $ecode $etxt"
+            if [[ $l == 1 ]]; then LOGTXT+="     $SYMI Exit code: $ecode $etxt\n"; fi
+            ERROR=1
+        fi
+        echo "$CLRD-----------------------------------------------------------------$CLRX"
+        if [[ $l == 1 ]]; then LOGTXT+="-----------------------------------------------------------------"; fi
+        echo -e "$LOGTXT" >> "${LOG}_all.log"
+        if [[ $ERROR == 1 ]]; then echo -e "$LOGTXT" >> "${LOG}_err.log"; fi
+    done
+    if [[ $l == 1 ]]; then echo "$CLRI $SYMI All logs for current deployment:$CLRX${LOG}_all.log"; fi
+    if [[ $l == 1 ]]; then echo "$CLRI $SYMI Error logs for current deployment:$CLRX${LOG}_err.log"; fi
+    echo "$CLRX"
+fi
